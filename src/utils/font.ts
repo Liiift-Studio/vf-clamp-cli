@@ -66,3 +66,23 @@ export function assertFontExtension(filePath: string): void {
 		);
 	}
 }
+
+/**
+ * Sanitizes a string for safe use as a filename stem.
+ * Strips path separators, null bytes, and leading dots/spaces that could
+ * cause path traversal or hidden-file issues.
+ */
+export function sanitizeFilename(name: string): string {
+	// Remove null bytes.
+	let safe = name.replace(/\0/g, '');
+	// Replace path separators and common shell-special chars with a hyphen.
+	safe = safe.replace(/[/\\:*?"<>|]/g, '-');
+	// Collapse multiple hyphens.
+	safe = safe.replace(/-{2,}/g, '-');
+	// Strip leading dots, spaces, and hyphens to avoid hidden files / relative paths.
+	safe = safe.replace(/^[.\s-]+/, '');
+	// Strip trailing spaces and hyphens.
+	safe = safe.replace(/[\s-]+$/, '');
+	// Fall back to a safe default if nothing is left.
+	return safe || 'output';
+}

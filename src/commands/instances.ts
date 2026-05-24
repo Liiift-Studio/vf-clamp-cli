@@ -39,6 +39,12 @@ export function registerInstancesCommand(program: Command): void {
 					instances: InstanceInfo[];
 				};
 
+				if (axes.length === 0) {
+					process.stderr.write(
+						`Warning: "${fontPath}" has no variable axes — this appears to be a static font.\n`,
+					);
+				}
+
 				printAxes(axes);
 				printInstances(instances);
 			} catch (err) {

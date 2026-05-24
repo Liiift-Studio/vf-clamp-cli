@@ -4,17 +4,20 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import type { Command } from 'commander';
 import { clampFont } from '@liiift-studio/vf-clamp';
+import type { AxisValue, OutputConfig } from '@liiift-studio/vf-clamp';
 import {
 	readFontFile,
 	writeOutputs,
 	assertFontExtension,
+	sanitizeFilename,
 } from '../utils/font.js';
 
 /** Shape of a single output entry in a config file. */
 interface ConfigOutput {
 	name?: string;
 	instances?: string[];
-	axes?: Record<string, { min?: number; max?: number } | number>;
+	/** Axis constraints: number to pin, {min,max} to restrict, null to keep full range. */
+	axes?: Record<string, { min: number; max: number } | number | null>;
 }
 
 /** Shape of the JSON config file accepted by --config. */
@@ -28,7 +31,8 @@ interface ClampConfig {
 interface OutputRequest {
 	name: string;
 	instances?: string[];
-	axes?: Record<string, { min?: number; max?: number } | number>;
+	/** Axis constraints using the exact AxisValue type from the engine. */
+	axes?: Record<string, AxisValue>;
 }
 
 /** Supported output formats. */
@@ -81,8 +85,9 @@ export function registerClampCommand(program: Command): void {
 
 				assertFormat(format);
 
+				// Warn about cold start before any Pyodide work begins.
 				process.stderr.write(
-					`Processing… (this may take 10–20s on first run)\n`,
+					`Processing ${outputRequests.length} output(s)… (first run may take 10–20s)\n`,
 				);
 
 				// clampFont accepts one output per call as defined by the current API.
@@ -164,6 +169,7 @@ async function readConfig(configPath: string): Promise<ClampConfig> {
 /**
  * Converts config-file outputs into resolved output requests.
  * Each output must have either `instances` or `axes`.
+ * Names are sanitized for safe use as filenames.
  */
 function buildRequestsFromConfig(config: ClampConfig): OutputRequest[] {
 	return config.outputs.map((output, idx) => {
@@ -172,10 +178,11 @@ function buildRequestsFromConfig(config: ClampConfig): OutputRequest[] {
 				`Output at index ${idx} must have "instances" or "axes"`,
 			);
 		}
+		const rawName = output.name ?? `output-${idx + 1}`;
 		return {
-			name: output.name ?? `output-${idx + 1}`,
+			name: sanitizeFilename(rawName),
 			instances: output.instances,
-			axes: output.axes,
+			axes: output.axes as Record<string, AxisValue> | undefined,
 		};
 	});
 }
@@ -195,18 +202,18 @@ function buildRequestFromFlags(opts: ClampOptions): OutputRequest[] {
 
 	const axes = parseAxisSpecs(axisSpecs);
 
-	// Derive a name if not explicitly provided.
-	const derivedName =
+	// Derive a name if not explicitly provided, then sanitize it for safe use as a filename.
+	const rawName =
 		name ??
 		(instances.length > 0
 			? instances.join('-')
-			: Object.keys(axes)
-					.map((tag) => tag)
-					.join('-'));
+			: Object.keys(axes).join('-'));
+
+	const safeName = sanitizeFilename(rawName);
 
 	return [
 		{
-			name: derivedName,
+			name: safeName,
 			instances: instances.length > 0 ? instances : undefined,
 			axes: Object.keys(axes).length > 0 ? axes : undefined,
 		},
@@ -217,32 +224,58 @@ function buildRequestFromFlags(opts: ClampOptions): OutputRequest[] {
  * Parses `--axis` flag values into a structured axes map.
  * Accepted forms:
  *   tag:value        → pin to exact value (stored as a number)
- *   tag:min:max      → restrict to range
+ *   tag:min:max      → restrict to range (both min and max are required)
+ *
+ * Negative values are supported: slnt:-10:0 parses correctly because `-10` contains no colon.
  */
-function parseAxisSpecs(
-	specs: string[],
-): Record<string, { min?: number; max?: number } | number> {
-	const axes: Record<string, { min?: number; max?: number } | number> = {};
+function parseAxisSpecs(specs: string[]): Record<string, AxisValue> {
+	const axes: Record<string, AxisValue> = {};
 
 	for (const spec of specs) {
-		const parts = spec.split(':');
+		// Split on ':' but re-join from index 1 to handle potential edge cases with
+		// negative number notation.  Tag is always parts[0]; values follow.
+		const colonIdx = spec.indexOf(':');
+		if (colonIdx === -1) {
+			throw new Error(
+				`Invalid --axis value "${spec}". Expected tag:value or tag:min:max`,
+			);
+		}
 
-		if (parts.length === 2) {
-			const tag = parts[0];
-			const value = Number(parts[1]);
-			if (!tag || isNaN(value)) {
+		const tag = spec.slice(0, colonIdx).trim();
+		if (!tag) {
+			throw new Error(
+				`Invalid --axis value "${spec}": axis tag is empty`,
+			);
+		}
+		const rest = spec.slice(colonIdx + 1);
+
+		// Determine if rest contains another colon indicating min:max form.
+		// We must not split on a leading '-' sign, only on ':'.
+		const secondColon = rest.indexOf(':');
+
+		if (secondColon === -1) {
+			// Pin form: tag:value
+			const value = Number(rest);
+			if (isNaN(value)) {
 				throw new Error(
-					`Invalid --axis value "${spec}". Expected tag:value or tag:min:max`,
+					`Invalid --axis value "${spec}": "${rest}" is not a number`,
 				);
 			}
 			axes[tag] = value;
-		} else if (parts.length === 3) {
-			const tag = parts[0];
-			const min = Number(parts[1]);
-			const max = Number(parts[2]);
-			if (!tag || isNaN(min) || isNaN(max)) {
+		} else {
+			// Range form: tag:min:max
+			const minStr = rest.slice(0, secondColon);
+			const maxStr = rest.slice(secondColon + 1);
+			const min = Number(minStr);
+			const max = Number(maxStr);
+			if (isNaN(min)) {
 				throw new Error(
-					`Invalid --axis value "${spec}". Expected tag:value or tag:min:max`,
+					`Invalid --axis value "${spec}": min "${minStr}" is not a number`,
+				);
+			}
+			if (isNaN(max)) {
+				throw new Error(
+					`Invalid --axis value "${spec}": max "${maxStr}" is not a number`,
 				);
 			}
 			if (min > max) {
@@ -251,10 +284,6 @@ function parseAxisSpecs(
 				);
 			}
 			axes[tag] = { min, max };
-		} else {
-			throw new Error(
-				`Invalid --axis value "${spec}". Expected tag:value or tag:min:max`,
-			);
 		}
 	}
 
@@ -263,15 +292,13 @@ function parseAxisSpecs(
 
 /**
  * Converts an OutputRequest into the shape expected by clampFont's `outputs` array.
- * Merges instance names and axis overrides as supported by the engine.
+ * Passes both instances (for hull computation) and axes (for explicit constraints).
  */
-function buildClampOutput(req: OutputRequest): {
-	name: string;
-	instances?: string[];
-} {
+function buildClampOutput(req: OutputRequest): OutputConfig {
 	return {
 		name: req.name,
 		...(req.instances ? { instances: req.instances } : {}),
+		...(req.axes ? { axes: req.axes } : {}),
 	};
 }
 

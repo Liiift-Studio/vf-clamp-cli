@@ -1,0 +1,37 @@
+{
+  "name": "@liiift-studio/vf-clamp-cli",
+  "version": "0.1.0",
+  "description": "CLI for @liiift-studio/vf-clamp — restrict variable font axis ranges from the command line",
+  "type": "module",
+  "bin": {
+    "vf-clamp": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@liiift-studio/vf-clamp": "^2.0.1",
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Liiift-Studio/vf-clamp-cli.git"
+  },
+  "keywords": ["variable-font", "font", "cli", "vf-clamp", "typography", "fonttools"],
+  "author": "Quinn Keaveney <quinn@liiift.studio>",
+  "license": "MIT"
+}

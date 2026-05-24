@@ -249,6 +249,12 @@ function parseAxisSpecs(specs: string[]): Record<string, AxisValue> {
 		}
 		const rest = spec.slice(colonIdx + 1);
 
+		// Null form: tag:* or tag:keep — keep axis at its full original range.
+		if (rest === '*' || rest.toLowerCase() === 'keep') {
+			axes[tag] = null;
+			continue;
+		}
+
 		// Determine if rest contains another colon indicating min:max form.
 		// We must not split on a leading '-' sign, only on ':'.
 		const secondColon = rest.indexOf(':');

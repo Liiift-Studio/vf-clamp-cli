@@ -228,7 +228,7 @@ function buildRequestFromFlags(opts: ClampOptions): OutputRequest[] {
  *
  * Negative values are supported: slnt:-10:0 parses correctly because `-10` contains no colon.
  */
-function parseAxisSpecs(specs: string[]): Record<string, AxisValue> {
+export function parseAxisSpecs(specs: string[]): Record<string, AxisValue> {
 	const axes: Record<string, AxisValue> = {};
 
 	for (const spec of specs) {

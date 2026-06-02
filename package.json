@@ -1,44 +1,55 @@
 {
-  "name": "@liiift-studio/vf-clamp-cli",
-  "version": "0.1.0",
-  "description": "CLI for @liiift-studio/vf-clamp — restrict variable font axis ranges from the command line",
-  "type": "module",
-  "bin": {
-    "vf-clamp": "./dist/index.js"
-  },
-  "exports": {
-    "./package.json": "./package.json"
-  },
-  "files": ["dist", "LICENSE", "README.md"],
-  "scripts": {
-    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
-    "dev": "tsc -p tsconfig.build.json --watch",
-    "start": "node dist/index.js",
-    "test": "vitest run",
-    "test:coverage": "vitest run --coverage",
-    "prepublishOnly": "npm test && npm run build"
-  },
-  "dependencies": {
-    "@liiift-studio/vf-clamp": "^2.0.1",
-    "commander": "^12.0.0"
-  },
-  "devDependencies": {
-    "@types/node": "^20.0.0",
-    "@vitest/coverage-v8": "^3.2.0",
-    "typescript": "^5.0.0",
-    "vitest": "^3.2.0"
-  },
-  "engines": {
-    "node": ">=18.0.0"
-  },
-  "publishConfig": {
-    "access": "public"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Liiift-Studio/vf-clamp-cli.git"
-  },
-  "keywords": ["variable-font", "font", "cli", "vf-clamp", "typography", "fonttools"],
-  "author": "Quinn Keaveney <quinn@liiift.studio>",
-  "license": "MIT"
+	"name": "@liiift-studio/vf-clamp-cli",
+	"version": "0.1.1",
+	"description": "CLI for @liiift-studio/vf-clamp — restrict variable font axis ranges from the command line",
+	"type": "module",
+	"bin": {
+		"vf-clamp": "./dist/index.js"
+	},
+	"exports": {
+		"./package.json": "./package.json"
+	},
+	"files": [
+		"dist",
+		"LICENSE",
+		"README.md"
+	],
+	"scripts": {
+		"build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+		"dev": "tsc -p tsconfig.build.json --watch",
+		"start": "node dist/index.js",
+		"test": "vitest run",
+		"test:coverage": "vitest run --coverage",
+		"prepublishOnly": "npm test && npm run build"
+	},
+	"dependencies": {
+		"@liiift-studio/vf-clamp": "^2.0.1",
+		"commander": "^12.0.0"
+	},
+	"devDependencies": {
+		"@types/node": "^20.0.0",
+		"@vitest/coverage-v8": "^3.2.0",
+		"typescript": "^5.0.0",
+		"vitest": "^3.2.0"
+	},
+	"engines": {
+		"node": ">=18.0.0"
+	},
+	"publishConfig": {
+		"access": "public"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/Liiift-Studio/vf-clamp-cli.git"
+	},
+	"keywords": [
+		"variable-font",
+		"font",
+		"cli",
+		"vf-clamp",
+		"typography",
+		"fonttools"
+	],
+	"author": "Quinn Keaveney <quinn@liiift.studio>",
+	"license": "MIT"
 }

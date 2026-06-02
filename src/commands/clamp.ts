@@ -1,43 +1,34 @@
 // `vf-clamp clamp <font>` — produce one or more restricted variable font files.
+// Wires commander flags onto the pure config/parser/format-validator layer in
+// `src/core/*` and the IO helpers in `src/utils/*`.
 
-import fs from 'node:fs/promises';
-import path from 'node:path';
 import type { Command } from 'commander';
-import { clampFont } from '@liiift-studio/vf-clamp';
-import type { AxisValue, OutputConfig } from '@liiift-studio/vf-clamp';
-import {
-	readFontFile,
-	writeOutputs,
-	assertFontExtension,
-	sanitizeFilename,
-} from '../utils/font.js';
+import type { OutputConfig } from '@liiift-studio/vf-clamp';
+import { readFontFile, writeOutputs, assertFontExtension, sanitizeFilename } from '../utils/font.js';
+import { ellipsisGlyph } from '../utils/format.js';
+import { SUPPORTED_FORMATS, assertFormat, type Format } from '../core/format.js';
+import { parseAxisSpecs } from '../core/axisSpecs.js';
+import { readConfig, type OutputRequest } from '../core/config.js';
+import { EX_USAGE, EX_DATAERR, EX_NOINPUT, EX_CONFIG, EX_SOFTWARE, classifyError } from '../core/exitCodes.js';
 
-/** Shape of a single output entry in a config file. */
-interface ConfigOutput {
+// Re-export parseAxisSpecs for backward compatibility with existing tests
+// while keeping the canonical home in `src/core/axisSpecs.ts`.
+export { parseAxisSpecs } from '../core/axisSpecs.js';
+
+/** Options shape for the clamp command (mirrors commander flag definitions). */
+interface ClampOptions {
+	instance: string[];
+	axis: string[];
 	name?: string;
-	instances?: string[];
-	/** Axis constraints: number to pin, {min,max} to restrict, null to keep full range. */
-	axes?: Record<string, { min: number; max: number } | number | null>;
+	format: string;
+	output: string;
+	config?: string;
+	force?: boolean;
+	dryRun?: boolean;
+	json?: boolean;
+	quiet?: boolean;
+	verbose?: boolean;
 }
-
-/** Shape of the JSON config file accepted by --config. */
-interface ClampConfig {
-	format?: string;
-	outputDir?: string;
-	outputs: ConfigOutput[];
-}
-
-/** A resolved output request passed to clampFont. */
-interface OutputRequest {
-	name: string;
-	instances?: string[];
-	/** Axis constraints using the exact AxisValue type from the engine. */
-	axes?: Record<string, AxisValue>;
-}
-
-/** Supported output formats. */
-const SUPPORTED_FORMATS = ['ttf', 'otf', 'woff', 'woff2'] as const;
-type Format = (typeof SUPPORTED_FORMATS)[number];
 
 /**
  * Registers the `clamp` subcommand on the given commander program.
@@ -46,80 +37,147 @@ type Format = (typeof SUPPORTED_FORMATS)[number];
 export function registerClampCommand(program: Command): void {
 	program
 		.command('clamp <font>')
-		.description('Produce one or more restricted variable font files')
+		.description(
+			'Produce one or more restricted variable font files.\n' +
+			'Pass "-" for <font> to read the source font from stdin.',
+		)
 		.option(
-			'--instance <name>',
+			'-i, --instance <name>',
 			'Named instance to include in hull (repeatable)',
 			collect,
 			[] as string[],
 		)
 		.option(
-			'--axis <spec>',
-			'Pin or restrict an axis: tag:value  or  tag:min:max (repeatable)',
+			'-a, --axis <spec>',
+			'Pin or restrict an axis: tag:value, tag:min:max, or tag:* (repeatable)',
 			collect,
 			[] as string[],
 		)
-		.option('--name <name>', 'Output name (filename stem and name-table label)')
-		.option('--format <fmt>', 'Output format: ttf | otf | woff | woff2', 'ttf')
-		.option('--output <dir>', 'Output directory', '.')
-		.option('--config <file>', 'JSON config file for multiple outputs')
+		.option('-n, --name <name>', 'Output name (filename stem)')
+		.option('-f, --format <fmt>', `Output format: ${SUPPORTED_FORMATS.join(' | ')}`, 'ttf')
+		.option('-o, --output <dir>', 'Output directory', '.')
+		.option('-c, --config <file>', 'JSON config file for multiple outputs')
+		.option('--force', 'Overwrite existing output files without warning', true)
+		.option('--no-force', 'Refuse to overwrite existing output files')
+		.option('--dry-run', 'Validate inputs without invoking the engine or writing files')
+		.option('--json', 'Print results as JSON to stdout')
+		.option('-q, --quiet', 'Suppress progress messages on stderr')
+		.option('--verbose', 'Print extra diagnostic output (Python tracebacks on error)')
+		.addHelpText('after', `
+Examples:
+  $ vf-clamp clamp MyFont.ttf -i Light -i Bold -n Light-Bold
+  $ vf-clamp clamp MyFont.ttf -a wght:300:700 -f woff2
+  $ vf-clamp clamp MyFont.ttf -a wght:400 -n Regular-Only
+  $ vf-clamp clamp MyFont.ttf -i Light -i Bold -a slnt:-5:0 -n LightBold-Slanted
+  $ vf-clamp clamp MyFont.ttf -c clamp.config.json
+  $ cat MyFont.ttf | vf-clamp clamp - -i Bold -n Bold-only
+
+Axis spec forms:
+  tag:value      pin the axis to a single value
+  tag:min:max    restrict the axis to a sub-range
+  tag:*          keep the axis at its full original range
+  tag:keep       alias for tag:*
+
+Exit codes:
+  0  success
+  2  usage / validation error (bad flags, malformed --axis, missing inputs)
+  65 input data error (bad font, bad JSON config)
+  66 input file missing or unreadable
+  70 internal engine error
+  78 invalid configuration
+
+First run in a fresh process takes 10–20s while Pyodide initialises.
+`)
 		.action(async (fontPath: string, opts: ClampOptions) => {
 			try {
-				assertFontExtension(fontPath);
-				const buffer = await readFontFile(fontPath);
-
-				let outputRequests: OutputRequest[];
-				let format: string = opts.format;
-				let outputDir: string = opts.output;
-
-				if (opts.config) {
-					// Config-file mode — build all output requests from the JSON file.
-					const config = await readConfig(opts.config);
-					outputRequests = buildRequestsFromConfig(config);
-					format = config.format ?? format;
-					outputDir = config.outputDir ?? outputDir;
-				} else {
-					// Flag mode — build a single output request.
-					outputRequests = buildRequestFromFlags(opts);
-				}
-
-				assertFormat(format);
-
-				// Warn about cold start before any Pyodide work begins.
-				process.stderr.write(
-					`Processing ${outputRequests.length} output(s)… (first run may take 10–20s)\n`,
-				);
-
-				// clampFont accepts one output per call as defined by the current API.
-				const allResults: Array<{ name: string; buffer: Uint8Array; format: string }> = [];
-
-				for (const req of outputRequests) {
-					const clampOutput = buildClampOutput(req);
-					const results = await clampFont(buffer, {
-						outputs: [clampOutput],
-						format: format as Format,
-					});
-					// Attach the name from our request to each result.
-					for (const result of results) {
-						allResults.push({
-							name: req.name,
-							buffer: result.buffer,
-							format: result.format ?? format,
-						});
-					}
-				}
-
-				const written = await writeOutputs(allResults, outputDir);
-
-				for (const filePath of written) {
-					process.stdout.write(`Written: ${filePath}\n`);
-				}
+				await runClamp(fontPath, opts);
 			} catch (err) {
 				const message = err instanceof Error ? err.message : String(err);
-				process.stderr.write(`Error: ${message}\n`);
-				process.exit(1);
+				const code = classifyError(err);
+				const detail = opts.verbose && err instanceof Error && err.stack ? `\n${err.stack}` : '';
+				// Set exitCode and write to stderr; the entry point's parseAsync
+				// handler will exit with the correct code after the event loop drains.
+				process.exitCode = code;
+				process.stderr.write(`vf-clamp clamp: ${message}${detail}\n`);
 			}
 		});
+}
+
+/**
+ * Core clamp action — separated from the commander handler so it can be
+ * driven directly from tests.
+ */
+async function runClamp(fontPath: string, opts: ClampOptions): Promise<void> {
+	assertFontExtension(fontPath);
+
+	// Build request list and resolve effective format/outputDir.
+	let outputRequests: OutputRequest[];
+	let format: Format;
+	let outputDir: string;
+
+	if (opts.config) {
+		// Warn loudly when CLI flags conflict with config-supplied values.
+		warnIfFlagsIgnored(opts);
+		const config = await readConfig(opts.config);
+		outputRequests = config.outputs.map((output, idx) => ({
+			name: sanitizeFilename(output.name ?? `output-${idx + 1}`),
+			...(output.instances ? { instances: output.instances } : {}),
+			...(output.axes ? { axes: output.axes } : {}),
+		}));
+		const candidateFormat = config.format ?? opts.format;
+		assertFormat(candidateFormat);
+		format = candidateFormat;
+		outputDir = config.outputDir ?? opts.output;
+	} else {
+		assertFormat(opts.format);
+		format = opts.format;
+		outputDir = opts.output;
+		outputRequests = buildRequestFromFlags(opts);
+	}
+
+	if (opts.dryRun) {
+		const lines = outputRequests.map((r, i) => `  [${i + 1}] ${r.name}.${format}`).join('\n');
+		writeLog(opts, `Dry run: ${outputRequests.length} output(s) would be written to ${outputDir}\n${lines}\n`);
+		return;
+	}
+
+	// Read source font (after dry-run check so dry-run does not read the file).
+	const buffer = await readFontFile(fontPath);
+
+	writeLog(opts, `Processing ${outputRequests.length} output(s)${ellipsisGlyph()} (first run may take 10–20s)\n`);
+
+	// Dynamic import so `--help`/`--version`/dry-run do not pay the engine's
+	// ESM resolution and Pyodide bootstrap cost.
+	const { clampFont } = await import('@liiift-studio/vf-clamp');
+
+	// Batch ALL outputs into a single clampFont call so Pyodide is initialised
+	// once, the font buffer crosses the WASM bridge once, and fontTools parses
+	// the TTFont once.  The engine's `outputs` array is designed for this.
+	const clampOutputs: OutputConfig[] = outputRequests.map(buildClampOutput);
+	const results = await clampFont(buffer, {
+		outputs: clampOutputs,
+		format,
+	});
+
+	// Pair engine results back with the names we requested so writeOutputs can
+	// compose filenames using our sanitised names rather than whatever the
+	// engine echoed back.
+	const writeInputs = results.map((result, i) => ({
+		name: outputRequests[i]?.name ?? result.name,
+		buffer: result.buffer,
+		format: result.format ?? format,
+	}));
+
+	const written = await writeOutputs(writeInputs, outputDir, { force: opts.force !== false });
+
+	if (opts.json) {
+		process.stdout.write(JSON.stringify({ written }) + '\n');
+	} else {
+		for (const filePath of written) {
+			// Bare paths on stdout so consumers can `... | xargs` them.
+			process.stdout.write(`${filePath}\n`);
+		}
+	}
 }
 
 /** Commander value collector — appends each repeated flag value into an array. */
@@ -127,64 +185,20 @@ function collect(value: string, previous: string[]): string[] {
 	return [...previous, value];
 }
 
-/** Options shape for the clamp command. */
-interface ClampOptions {
-	instance: string[];
-	axis: string[];
-	name?: string;
-	format: string;
-	output: string;
-	config?: string;
-}
-
 /**
- * Reads and parses a JSON config file from disk.
- * Throws a descriptive error if the file cannot be read or parsed.
+ * Emits stderr warnings when --config is combined with flags whose values
+ * would have been used in flag-mode.  Avoids the silent-override footgun.
  */
-async function readConfig(configPath: string): Promise<ClampConfig> {
-	const resolved = path.resolve(configPath);
-	let raw: string;
-	try {
-		raw = await fs.readFile(resolved, 'utf-8');
-	} catch (err) {
-		const message = err instanceof Error ? err.message : String(err);
-		throw new Error(`Could not read config file "${resolved}": ${message}`);
+function warnIfFlagsIgnored(opts: ClampOptions): void {
+	const ignored: string[] = [];
+	if (opts.instance.length > 0) ignored.push('--instance');
+	if (opts.axis.length > 0) ignored.push('--axis');
+	if (opts.name) ignored.push('--name');
+	if (ignored.length > 0 && !opts.quiet) {
+		process.stderr.write(
+			`vf-clamp clamp: warning — ${ignored.join(', ')} ignored when --config is used\n`,
+		);
 	}
-
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(raw);
-	} catch {
-		throw new Error(`Config file "${resolved}" is not valid JSON`);
-	}
-
-	const config = parsed as ClampConfig;
-	if (!Array.isArray(config.outputs) || config.outputs.length === 0) {
-		throw new Error(`Config file must contain a non-empty "outputs" array`);
-	}
-
-	return config;
-}
-
-/**
- * Converts config-file outputs into resolved output requests.
- * Each output must have either `instances` or `axes`.
- * Names are sanitized for safe use as filenames.
- */
-function buildRequestsFromConfig(config: ClampConfig): OutputRequest[] {
-	return config.outputs.map((output, idx) => {
-		if (!output.instances?.length && !output.axes) {
-			throw new Error(
-				`Output at index ${idx} must have "instances" or "axes"`,
-			);
-		}
-		const rawName = output.name ?? `output-${idx + 1}`;
-		return {
-			name: sanitizeFilename(rawName),
-			instances: output.instances,
-			axes: output.axes as Record<string, AxisValue> | undefined,
-		};
-	});
 }
 
 /**
@@ -195,110 +209,29 @@ function buildRequestFromFlags(opts: ClampOptions): OutputRequest[] {
 	const { instance: instances, axis: axisSpecs, name } = opts;
 
 	if (instances.length === 0 && axisSpecs.length === 0) {
-		throw new Error(
+		const err = new Error(
 			'Provide at least one --instance or --axis flag, or use --config for a config file.',
 		);
+		// Mark for the exit-code classifier.
+		(err as Error & { code?: string }).code = 'USAGE';
+		throw err;
 	}
 
 	const axes = parseAxisSpecs(axisSpecs);
 
-	// Derive a name if not explicitly provided, then sanitize it for safe use as a filename.
 	const rawName =
-		name ??
-		(instances.length > 0
-			? instances.join('-')
-			: Object.keys(axes).join('-'));
+		name ?? (instances.length > 0 ? instances.join('-') : Object.keys(axes).join('-'));
 
 	const safeName = sanitizeFilename(rawName);
 
-	return [
-		{
-			name: safeName,
-			instances: instances.length > 0 ? instances : undefined,
-			axes: Object.keys(axes).length > 0 ? axes : undefined,
-		},
-	];
-}
-
-/**
- * Parses `--axis` flag values into a structured axes map.
- * Accepted forms:
- *   tag:value        → pin to exact value (stored as a number)
- *   tag:min:max      → restrict to range (both min and max are required)
- *
- * Negative values are supported: slnt:-10:0 parses correctly because `-10` contains no colon.
- */
-export function parseAxisSpecs(specs: string[]): Record<string, AxisValue> {
-	const axes: Record<string, AxisValue> = {};
-
-	for (const spec of specs) {
-		// Split on ':' but re-join from index 1 to handle potential edge cases with
-		// negative number notation.  Tag is always parts[0]; values follow.
-		const colonIdx = spec.indexOf(':');
-		if (colonIdx === -1) {
-			throw new Error(
-				`Invalid --axis value "${spec}". Expected tag:value or tag:min:max`,
-			);
-		}
-
-		const tag = spec.slice(0, colonIdx).trim();
-		if (!tag) {
-			throw new Error(
-				`Invalid --axis value "${spec}": axis tag is empty`,
-			);
-		}
-		const rest = spec.slice(colonIdx + 1);
-
-		// Null form: tag:* or tag:keep — keep axis at its full original range.
-		if (rest === '*' || rest.toLowerCase() === 'keep') {
-			axes[tag] = null;
-			continue;
-		}
-
-		// Determine if rest contains another colon indicating min:max form.
-		// We must not split on a leading '-' sign, only on ':'.
-		const secondColon = rest.indexOf(':');
-
-		if (secondColon === -1) {
-			// Pin form: tag:value
-			const value = Number(rest);
-			if (isNaN(value)) {
-				throw new Error(
-					`Invalid --axis value "${spec}": "${rest}" is not a number`,
-				);
-			}
-			axes[tag] = value;
-		} else {
-			// Range form: tag:min:max
-			const minStr = rest.slice(0, secondColon);
-			const maxStr = rest.slice(secondColon + 1);
-			const min = Number(minStr);
-			const max = Number(maxStr);
-			if (isNaN(min)) {
-				throw new Error(
-					`Invalid --axis value "${spec}": min "${minStr}" is not a number`,
-				);
-			}
-			if (isNaN(max)) {
-				throw new Error(
-					`Invalid --axis value "${spec}": max "${maxStr}" is not a number`,
-				);
-			}
-			if (min > max) {
-				throw new Error(
-					`Invalid --axis "${spec}": min (${min}) must not exceed max (${max})`,
-				);
-			}
-			axes[tag] = { min, max };
-		}
-	}
-
-	return axes;
+	const req: OutputRequest = { name: safeName };
+	if (instances.length > 0) req.instances = instances;
+	if (Object.keys(axes).length > 0) req.axes = axes;
+	return [req];
 }
 
 /**
  * Converts an OutputRequest into the shape expected by clampFont's `outputs` array.
- * Passes both instances (for hull computation) and axes (for explicit constraints).
  */
 function buildClampOutput(req: OutputRequest): OutputConfig {
 	return {
@@ -308,14 +241,12 @@ function buildClampOutput(req: OutputRequest): OutputConfig {
 	};
 }
 
-/**
- * Asserts that the requested format is in the supported list.
- * Throws a descriptive error if not.
- */
-function assertFormat(format: string): void {
-	if (!SUPPORTED_FORMATS.includes(format as Format)) {
-		throw new Error(
-			`Unsupported format "${format}". Choose from: ${SUPPORTED_FORMATS.join(', ')}`,
-		);
-	}
+/** Writes a progress/log line to stderr unless quiet or stderr is closed. */
+function writeLog(opts: ClampOptions, message: string): void {
+	if (opts.quiet || opts.json) return;
+	process.stderr.write(message);
 }
+
+// Re-export typed exit codes so other modules can use them without
+// reaching into core/.
+export { EX_USAGE, EX_DATAERR, EX_NOINPUT, EX_CONFIG, EX_SOFTWARE };

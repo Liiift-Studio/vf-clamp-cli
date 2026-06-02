@@ -6,14 +6,17 @@
   "bin": {
     "vf-clamp": "./dist/index.js"
   },
-  "main": "./dist/index.js",
-  "files": ["dist"],
+  "exports": {
+    "./package.json": "./package.json"
+  },
+  "files": ["dist", "LICENSE", "README.md"],
   "scripts": {
-    "build": "tsc",
-    "dev": "tsc --watch",
+    "build": "tsc -p tsconfig.build.json && chmod +x dist/index.js",
+    "dev": "tsc -p tsconfig.build.json --watch",
     "start": "node dist/index.js",
     "test": "vitest run",
-    "prepublishOnly": "npm run build"
+    "test:coverage": "vitest run --coverage",
+    "prepublishOnly": "npm test && npm run build"
   },
   "dependencies": {
     "@liiift-studio/vf-clamp": "^2.0.1",
@@ -21,6 +24,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
+    "@vitest/coverage-v8": "^3.2.0",
     "typescript": "^5.0.0",
     "vitest": "^3.2.0"
   },
@@ -28,7 +32,8 @@
     "node": ">=18.0.0"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "repository": {
     "type": "git",

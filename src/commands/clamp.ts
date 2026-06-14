@@ -171,13 +171,87 @@ async function runClamp(fontPath: string, opts: ClampOptions): Promise<void> {
 	const written = await writeOutputs(writeInputs, outputDir, { force: opts.force !== false });
 
 	if (opts.json) {
-		process.stdout.write(JSON.stringify({ written }) + '\n');
+		// v0.2.x: include per-output structural diagnostics when --json is set
+		// so machine consumers (build pipelines, batch scripts) can read the
+		// same instance / axis / pinned / size summary the Glyphs and
+		// RoboFont plugins show in their size-estimate strip.
+		const diagnostics = writeInputs.map((result, i) => {
+			const req = outputRequests[i];
+			return {
+				path: written[i],
+				...summariseRequest(req, result.buffer),
+			};
+		});
+		process.stdout.write(JSON.stringify({ written, diagnostics }) + '\n');
 	} else {
-		for (const filePath of written) {
+		for (let i = 0; i < written.length; i++) {
+			const filePath = written[i];
 			// Bare paths on stdout so consumers can `... | xargs` them.
 			process.stdout.write(`${filePath}\n`);
+			if (opts.verbose) {
+				// Diagnostic line mirrors the Glyphs+RoboFont dialog's size
+				// estimate: `~38 KB · 5 instances · 3 ax · 1 pinned`. Goes to
+				// stderr so it doesn't pollute the xargs-friendly stdout.
+				const req = outputRequests[i];
+				const result = writeInputs[i];
+				if (req && result) {
+					process.stderr.write(`  ${formatSummary(summariseRequest(req, result.buffer))}\n`);
+				}
+			}
 		}
 	}
+}
+
+/**
+ * Compute the structural-summary fields shown in --verbose / --json output.
+ * Mirrors the Glyphs and RoboFont dialogs' `_count_structural` helper:
+ * number of licensed instances, total axes the user touched, number of
+ * those axes pinned to a single value, and the resulting file size.
+ *
+ * Master count is intentionally omitted — the engine doesn't expose
+ * post-instancer master geometry through its public API, and computing
+ * it from the OUTPUT buffer would require re-parsing TTFont in JS.
+ */
+function summariseRequest(
+	req: OutputRequest | undefined,
+	buffer: Uint8Array,
+): { sizeBytes: number; instances: number; axes: number; pinned: number } {
+	const instances = req?.instances?.length ?? 0;
+	const axesObj = req?.axes ?? {};
+	const axes = Object.keys(axesObj).length;
+	let pinned = 0;
+	for (const value of Object.values(axesObj)) {
+		// Numbers in the axes map mean "pin to this value"; objects with
+		// equal min/max are also effectively pinned.
+		if (typeof value === 'number') {
+			pinned++;
+		} else if (
+			value && typeof value === 'object'
+			&& 'min' in value && 'max' in value
+			&& (value as { min: number; max: number }).min
+				=== (value as { min: number; max: number }).max
+		) {
+			pinned++;
+		}
+	}
+	return { sizeBytes: buffer.byteLength, instances, axes, pinned };
+}
+
+/** Human-readable form of summariseRequest's output. */
+function formatSummary(s: {
+	sizeBytes: number; instances: number; axes: number; pinned: number;
+}): string {
+	const parts: string[] = [];
+	const sizeKB = Math.round(s.sizeBytes / 1024);
+	parts.push(`~${sizeKB.toLocaleString()} KB`);
+	if (s.instances > 0) {
+		parts.push(`${s.instances} instance${s.instances !== 1 ? 's' : ''}`);
+	}
+	if (s.axes > 0) {
+		const pinnedSuffix = s.pinned > 0 ? ` · ${s.pinned} pinned` : '';
+		parts.push(`${s.axes} ax${pinnedSuffix}`);
+	}
+	return parts.join('  ·  ');
 }
 
 /** Commander value collector — appends each repeated flag value into an array. */

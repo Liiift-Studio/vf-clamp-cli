@@ -1,6 +1,6 @@
 {
 	"name": "@liiift-studio/vf-clamp-cli",
-	"version": "0.2.0",
+	"version": "0.2.1",
 	"description": "CLI for @liiift-studio/vf-clamp — restrict variable font axis ranges from the command line",
 	"type": "module",
 	"bin": {

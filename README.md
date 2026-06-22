@@ -4,6 +4,10 @@ A command-line interface for [`@liiift-studio/vf-clamp`](https://www.npmjs.com/p
 
 ![vf-clamp CLI: inspecting a variable font's axes and named instances, then clamping Regular–Bold to a Text WOFF2](https://raw.githubusercontent.com/Liiift-Studio/vf-clamp-cli/main/assets/demo.gif?v=1)
 
+## Try it live
+
+Want to see what axis-clamping does before installing anything? **[vfclamp.com](https://vfclamp.com)** is an interactive web demo of the same axis-constraint engine that powers this CLI — upload a variable font, pick named instances or set axis ranges in the browser, and download the restricted result. The CLI runs the identical engine locally and headless for scripting and batch workflows.
+
 ## Install
 
 Requires **Node.js 18 or newer**.
